@@ -4,6 +4,7 @@
 #include <string>
 #include <utility>
 #include <list>
+#include <stack>
 using namespace std;
 
 struct Tree {
@@ -22,12 +23,17 @@ list<pair<string,list<string>>> symtabOrder;
 map<string,int> signatures;
 //a parse tree to store the input (the tree representing the wlp4i file)
 Tree parse;
+//stack of names of called procedures
+stack<string> procCalls;
 
 string funcname = "";
 string varname = "";
 string type = "";
 string callproc = "";
 int offset = 0;
+int ifcount = 0;
+int loopcount = 0;
+int delcount = 0;
 list<pair<string,list<string>>>::iterator argprocit;
 list<string>::iterator argit;
 
@@ -36,7 +42,21 @@ Tree& childrenAt(Tree& t,int n);
 bool goodtype(Tree& t);
 string findtype(Tree& t);
 void insert(Tree& t);
-//void asm(Tree& t);
+void push(int reg);
+void pop(int reg);
+void proceduresCode(Tree& t);
+void procedureCode(Tree& t);
+void mainCode(Tree& t);
+void dclsCode(Tree& t);
+void stmtsCode(Tree& t);
+void stmtCode(Tree& t);
+void lvalCode(Tree& t);
+void factCode(Tree& t);
+void argspushCode(Tree& t);
+void testCode(Tree& t);
+void exprCode(Tree& t);
+void termCode(Tree& t);
+
 
 //Check if string is a terminal
 bool isterm(string& s) {
@@ -131,13 +151,12 @@ bool goodtype(Tree& t) {
     argit = (argprocit->second).begin();
     good = (argprocit != symtabOrder.end()) && (goodtype(childrenAt(t,2)));
   } else if (t.node.first == "arglist") {
-    good = (findtype(childrenAt(t,0)) == *argit);
-    if (t.node.second == "expr") {
-      ++argit;
-      good = (good && (argit == (argprocit->second).end()));
-    } else if (t.node.first == "expr COMMA arglist") {
-      ++argit;
-      good = (good && goodtype(childrenAt(t,2)) && (argit == (argprocit->second).end()));
+    if ((!(symtab.count(callproc))) || (!(symtab.at(callproc).count(*argit)))) throw string ("ERROR");
+    string argtype = symtab.at(callproc).at(*argit).first;
+    good = (findtype(childrenAt(t,0)) == argtype);
+    ++argit;
+    if (t.node.first == "expr COMMA arglist") {
+      good = (good && goodtype(childrenAt(t,2)));
     }
   } else if (t.node.first == "start") {
     good = goodtype(childrenAt(t,1));
@@ -282,16 +301,13 @@ void insert(Tree& t) {
         }
         varname = t.children.back().node.second;
         if (symtab.at(funcname).count(varname)) throw string("ERROR");
-        pair<string,int> dcl;
-        dcl.first = type;
+        pair<string,int> dcl (type,offset);
+        offset -= 4;
         (symtab.at(funcname))[varname] = dcl;
         symtabOrder.back().second.emplace_back(varname);
       } else if ((t.node.first == "dcls") && (t.node.second != "") && (t.children.size() == 4)) {
         if ((funcname == "") || (!(symtab.count(funcname)))) throw string("ERROR");
         if ((varname == "") || (!(symtab.at(funcname).count(varname)))) throw string("ERROR");
-        string value = t.children.back().node.first;
-        symtab.at(funcname).at(varname).second = offset;
-        offset += 4;
       } else if ((((t.node.first == "lvalue") && (t.node.second == "ID")) ||
                   ((t.node.first == "factor") && (t.node.second == "ID"))) &&
                  (t.children.size() == 1)) {
@@ -319,40 +335,356 @@ void insert(Tree& t) {
   }
 }
 
-/*void asm(Tree& t) {
+void push(int reg) {
+  cout << "sw $" << reg << ",-4($30)" << endl;
+  cout << "sub $30,$30,$4" << endl;
+}
+
+void pop(int reg) {
+  cout << "add $30,$30,$4" << endl;
+  cout << "lw $" << reg << ",-4($30)" << endl;
+}
+
+void proceduresCode(Tree& t) {
   if (t.node.second == "procedure procedures") {
-    asm(childrenAt(t,1));
+    string function = funcname;
+    funcname = childrenAt(childrenAt(t,0),1).node.second;
+    procCalls.push(funcname);
+    procedureCode(childrenAt(t,0));
+    procCalls.pop();
+    funcname = function;
+    proceduresCode(childrenAt(t,1));
   } else if (t.node.second == "main") {
-    asm(childrenAt(t,0));
-  } else if (t.node.first == "main") {
-    ;
-  } else if ((t.node.first == "type") && (t.node.second == "INT")) {
-    ;
-  } else if ((t.node.first == "dcls") && (t.node.second == "")) {
-    ;
-  } else if ((t.node.first == "dcl") && (t.node.second == "type ID")) {
-    ;
-  } else if ((t.node.first == "statements") && (t.node.second == "")) {
-    ;
-  } else if ((t.node.first == "expr") && (t.node.second == "term")) {
-    ;
-  } else if ((t.node.first == "term") && (t.node.second == "factor")) {
-    ;
-  } else if ((t.node.first == "factor") && (t.node.second == "ID")) {
-    ;
+    string function = funcname;
+    funcname = "wain";
+    procCalls.push("wain");
+    mainCode(childrenAt(t,0));
+    procCalls.pop();
+    funcname = function;
+  } else throw string("ERROR");
+}
+
+void procedureCode(Tree& t) {
+  if (t.node.first == "procedure") {
+    string functionName = childrenAt(t,1).node.second;
+    cout << "F" << functionName << ": ";
+    dclsCode(childrenAt(t,6));
+    stmtsCode(childrenAt(t,7));
+    exprCode(childrenAt(t,9));
+    cout << "jr $31" << endl;
+  } else throw string("ERROR");
+}
+
+void mainCode(Tree& t) {
+  if (t.node.first == "main") {
+    cout << "Fwain: ";
+    push(29);
+    cout << "sub $29,$30,$4" << endl;
+    push(1);
+    push(2);
+    if (childrenAt(childrenAt(t,3),0).node.second == "INT") {
+      cout << "add $2,$0,$0" << endl;
+    }
+    push(31);
+    cout << "lis $10" << endl;
+    cout << ".word init" << endl;
+    cout << "jalr $10" << endl;
+    pop(31);
+    dclsCode(childrenAt(t,8));
+    stmtsCode(childrenAt(t,9));
+    exprCode(childrenAt(t,11));
+    cout << "add $30,$29,$4" << endl;
+    pop(29);
+    cout << "add $5,$0,$0" << endl;
+    cout << "add $8,$0,$0" << endl;
+    cout << "add $10,$0,$0" << endl;
+  } else throw string("ERROR");
+}
+
+void dclsCode(Tree& t) {
+  if (t.node.second == "") {
+    return;
+  } else if (t.node.second == "dcls dcl BECOMES NUM SEMI") {
+    dclsCode(childrenAt(t,0));
+    cout << "lis $3" << endl;
+    cout << ".word " << childrenAt(t,3).node.second << endl;
+    push(3);
+  } else if (t.node.second == "dcls dcl BECOMES NULL SEMI") {
+    dclsCode(childrenAt(t,0));
+    push(11);
+  } else throw string("ERROR");
+}
+
+void stmtsCode(Tree& t) {
+  if (t.node.second == "") {
+    return;
+  } else if (t.node.second == "statements statement") {
+    stmtsCode(childrenAt(t,0));
+    stmtCode(childrenAt(t,1));
+  } else throw string("ERROR");
+}
+
+void stmtCode(Tree& t) {
+  if (t.node.second == "lvalue BECOMES expr SEMI") {
+    lvalCode(childrenAt(t,0));
+    push(3);
+    exprCode(childrenAt(t,2));
+    pop(5);
+    cout << "sw $3,0($5)" << endl;
+  } else if (t.node.second == "IF LPAREN test RPAREN LBRACE statements RBRACE ELSE LBRACE statements RBRACE") {
+    int outerifcount = ifcount;
+    ifcount++;
+    testCode(childrenAt(t,2));
+    cout << "beq $3,$0,else" << outerifcount << endl;
+    stmtsCode(childrenAt(t,5));
+    cout << "beq $0,$0,endif" << outerifcount << endl;
+    cout << "else" << outerifcount << ":" << endl;
+    stmtsCode(childrenAt(t,9));
+    cout << "endif" << outerifcount << ":" << endl;
+  } else if (t.node.second == "WHILE LPAREN test RPAREN LBRACE statements RBRACE") {
+    int outerloopcount = loopcount;
+    loopcount++;
+    cout << "loop" << outerloopcount << ": ";
+    testCode(childrenAt(t,2));
+    cout << "beq $3,$0,endloop" << outerloopcount << endl;
+    stmtsCode(childrenAt(t,5));
+    cout << "beq $0,$0,loop" << outerloopcount << endl;
+    cout << "endloop" << outerloopcount << ":" << endl;
+  } else if (t.node.second == "PRINTLN LPAREN expr RPAREN SEMI") {
+    exprCode(childrenAt(t,2));
+    cout << "add $1,$3,$0" << endl;
+    push(31);
+    cout << "lis $10" << endl;
+    cout << ".word print" << endl;
+    cout << "jalr $10" << endl;
+    pop(31);
+  } else if (t.node.second == "DELETE LBRACK RBRACK expr SEMI") {
+    exprCode(childrenAt(t,3));
+    int delc = delcount;
+    delcount++;
+    cout << "beq $3,$11,endDel" << delc << endl;
+    cout << "add $1,$3,$0" << endl;
+    push(31);
+    cout << "lis $10" << endl;
+    cout << ".word delete" << endl;
+    cout << "jalr $10" << endl;
+    pop(31);
+    cout << "endDel" << delc << ":" << endl;
+  } else throw string("ERROR");
+}
+
+void lvalCode(Tree& t) {
+  if (t.node.second == "ID") {
+    string id = childrenAt(t,0).node.second;
+    string function = procCalls.top();
+    int lvaloffset = symtab.at(function).at(id).second;
+    cout << "lis $3" << endl;
+    cout << ".word " << lvaloffset << endl;
+    cout << "add $3,$29,$3" << endl;
+  } else if (t.node.second == "STAR factor") {
+    factCode(childrenAt(t,1));
+  } else if (t.node.second == "LPAREN lvalue RPAREN") {
+    lvalCode(childrenAt(t,1));
+  } else throw string("ERROR");
+}
+
+void factCode(Tree& t) {
+  if (t.node.second == "ID") {
+    string id = childrenAt(t,0).node.second;
+    string function = procCalls.top();
+    int lvaloffset = symtab.at(function).at(id).second;
+    cout << "lw $3," << lvaloffset << "($29)" << endl;
+  } else if (t.node.second == "NUM") {
+    cout << "lis $3" << endl;
+    cout << ".word " << childrenAt(t,0).node.second << endl;
+  } else if (t.node.second == "NULL") {
+    cout << "add $3,$11,$0" << endl;
+  } else if (t.node.second == "LPAREN expr RPAREN") {
+    exprCode(childrenAt(t,1));
+  } else if (t.node.second == "AMP lvalue") {
+    lvalCode(childrenAt(t,1));
+  } else if (t.node.second == "STAR factor") {
+    factCode(childrenAt(t,1));
+    cout << "lw $3,0($3)" << endl;
+  } else if (t.node.second == "NEW INT LBRACK expr RBRACK") {
+    exprCode(childrenAt(t,3));
+    cout << "add $1,$3,$0" << endl;
+    push(31);
+    cout << "lis $10" << endl;
+    cout << ".word new" << endl;
+    cout << "jalr $10" << endl;
+    cout << "bne $3,$0,endif" << ifcount << endl;
+    cout << "add $3,$11,$0" << endl;
+    cout << "endif" << ifcount << ":" << endl;
+    ifcount++;
+    pop(31);
+  } else if (t.node.second == "ID LPAREN RPAREN") {
+    string function = childrenAt(t,0).node.second;
+    procCalls.push(function);
+    push(31);
+    cout << "lis $10" << endl;
+    cout << ".word F" << function << endl;
+    push(29);
+    cout << "sub $29,$30,$4" << endl;
+    cout << "jalr $10"  << endl;
+    cout << "add $30,$29,$4" << endl;
+    pop(29);
+    procCalls.pop();
+    pop(31);
+  } else if (t.node.second == "ID LPAREN arglist RPAREN") {
+    string function = childrenAt(t,0).node.second;
+    push(31);
+    push(29);
+    cout << "sub $8,$30,$4" << endl;
+    argspushCode(childrenAt(t,2));
+    procCalls.push(function);
+    cout << "add $29,$8,$0" << endl;
+    cout << "lis $10" << endl;
+    cout << ".word F" << function << endl;
+    cout << "jalr $10"  << endl;
+    cout << "add $30,$29,$4" << endl;
+    pop(29);
+    procCalls.pop();
+    pop(31);
+  } else throw string("ERROR");
+}
+
+void argspushCode(Tree& t) {
+  exprCode(childrenAt(t,0));
+  push(3);
+  if (t.node.second == "expr COMMA arglist") {
+    argspushCode(childrenAt(t,2));
   }
 }
 
-"add $3, ??, $0"
-main INT WAIN LPAREN dcl COMMA dcl RPAREN LBRACE dcls statements RETURN expr SEMI RBRACE
-type INT
-dcls 
-dcl type ID
-statements 
-expr term
-term factor
-factor ID
-*/
+void testCode(Tree& t) {
+  exprCode(childrenAt(t,0));
+  push(3);
+  exprCode(childrenAt(t,2));
+  pop(5);
+  if (t.node.second == "expr EQ expr") {
+    cout << "add $6,$0,$0" << endl;
+    cout << "add $7,$0,$0" << endl;
+    if (findtype(childrenAt(t,0)) == "int") {
+      cout << "slt $6,$3,$5" << endl;
+      cout << "slt $7,$5,$3" << endl;
+    } else if (findtype(childrenAt(t,0)) == "int*") {
+      cout << "sltu $6,$3,$5" << endl;
+      cout << "sltu $7,$5,$3" << endl;
+    } else throw string("ERROR");
+    cout << "add $5,$6,$7" << endl;
+    cout << "add $3,$0,$0" << endl;
+    cout << "slt $3,$5,$11" << endl;
+  } else if (t.node.second == "expr NE expr") {
+    cout << "add $6,$0,$0" << endl;
+    cout << "add $7,$0,$0" << endl;
+    if (findtype(childrenAt(t,0)) == "int") {
+      cout << "slt $6,$3,$5" << endl;
+      cout << "slt $7,$5,$3" << endl;
+    } else if (findtype(childrenAt(t,0)) == "int*") {
+      cout << "sltu $6,$3,$5" << endl;
+      cout << "sltu $7,$5,$3" << endl;
+    } else throw string("ERROR");
+    cout << "add $3,$6,$7" << endl;
+  } else if (t.node.second == "expr LT expr") {
+    cout << "add $6,$0,$0" << endl;
+    if (findtype(childrenAt(t,0)) == "int") {
+      cout << "slt $6,$5,$3" << endl;
+    } else if (findtype(childrenAt(t,0)) == "int*") {
+      cout << "sltu $6,$5,$3" << endl;
+    } else throw string("ERROR");
+    cout << "add $3,$6,$0" << endl;
+  } else if (t.node.second == "expr LE expr") {
+    cout << "add $6,$0,$0" << endl;
+    if (findtype(childrenAt(t,0)) == "int") {
+      cout << "slt $6,$3,$5" << endl;
+    } else if (findtype(childrenAt(t,0)) == "int*") {
+      cout << "sltu $6,$3,$5" << endl;
+    } else throw string("ERROR");
+    cout << "add $7,$0,$0" << endl;
+    cout << "slt $7,$6,$11" << endl;
+    cout << "add $3,$7,$0" << endl;
+  } else if (t.node.second == "expr GT expr") {
+    cout << "add $6,$0,$0" << endl;
+    if (findtype(childrenAt(t,0)) == "int") {
+      cout << "slt $6,$3,$5" << endl;
+    } else if (findtype(childrenAt(t,0)) == "int*") {
+      cout << "sltu $6,$3,$5" << endl;
+    } else throw string("ERROR");
+    cout << "add $3,$6,$0" << endl;
+  } else if (t.node.second == "expr GE expr") {
+    cout << "add $6,$0,$0" << endl;
+    if (findtype(childrenAt(t,0)) == "int") {
+      cout << "slt $6,$5,$3" << endl;
+    } else if (findtype(childrenAt(t,0)) == "int*") {
+      cout << "sltu $6,$5,$3" << endl;
+    } else throw string("ERROR");
+    cout << "add $3,$0,$0" << endl;
+    cout << "slt $3,$6,$11" << endl;
+  } else throw string("ERROR");
+}
+
+void exprCode(Tree& t) {
+  if (t.node.second == "term") {
+    termCode(childrenAt(t,0));
+  } else if (t.node.second == "expr PLUS term") {
+    exprCode(childrenAt(t,0));
+    if (findtype(childrenAt(t,2)) == "int*") {
+      cout << "mult $3,$4" << endl;
+      cout << "mflo $3" << endl;
+    }
+    push(3);
+    termCode(childrenAt(t,2));
+    pop(5);
+    if (findtype(childrenAt(t,0)) == "int*") {
+      cout << "mult $3,$4" << endl;
+      cout << "mflo $3" << endl;
+    }
+    cout << "add $3,$5,$3" << endl;
+  } else if (t.node.second == "expr MINUS term") {
+    exprCode(childrenAt(t,0));
+    push(3);
+    termCode(childrenAt(t,2));
+    pop(5);
+    if ((findtype(childrenAt(t,0)) == "int*") && (findtype(childrenAt(t,2)) == "int")) {
+      cout << "mult $3,$4" << endl;
+      cout << "mflo $3" << endl;
+    }
+    cout << "sub $3,$5,$3" << endl;
+    if ((findtype(childrenAt(t,0)) == "int*") && (findtype(childrenAt(t,2)) == "int*")) {
+      cout << "div $3,$4" << endl;
+      cout << "mflo $3" << endl;
+    }
+  } else throw string("ERROR");
+}
+
+void termCode(Tree& t) {
+  if (t.node.second == "factor") {
+    factCode(childrenAt(t,0));
+  } else if (t.node.second == "term STAR factor") {
+    termCode(childrenAt(t,0));
+    push(3);
+    factCode(childrenAt(t,2));
+    pop(5);
+    cout << "mult $5,$3" << endl;
+    cout << "mflo $3" << endl;
+  } else if (t.node.second == "term SLASH factor") {
+    termCode(childrenAt(t,0));
+    push(3);
+    factCode(childrenAt(t,2));
+    pop(5);
+    cout << "div $5,$3" << endl;
+    cout << "mflo $3" << endl;
+  } else if (t.node.second == "term PCT factor") {
+    termCode(childrenAt(t,0));
+    push(3);
+    factCode(childrenAt(t,2));
+    pop(5);
+    cout << "div $5,$3" << endl;
+    cout << "mfhi $3" << endl;
+  } else throw string("ERROR");
+}
+
 int main() {
   try {
     string line;
@@ -370,12 +702,23 @@ int main() {
     }
     pair<string,string> start (fromstart,line);
     parse.node = start;
-
     insert(parse);
     if (!goodtype(parse)) throw string("ERROR");
-
-//    asm(childrenAt(parse,1));
-
+    cout << ".import print" << endl;
+    cout << ".import init" << endl;
+    cout << ".import new" << endl;
+    cout << ".import delete" << endl;
+    cout << "lis $4" << endl;
+    cout << ".word 4" << endl;
+    cout << "lis $11" << endl;
+    cout << ".word 1" << endl;
+    push(31);
+    cout << "beq $0,$0,Fwain" << endl;
+    proceduresCode(childrenAt(parse,1));
+    pop(31);
+    cout << "add $4,$0,$0" << endl;
+    cout << "add $11,$0,$0" << endl;
+    cout << "jr $31" << endl;
   } catch (string &msg) {
     cerr << msg << endl;
   }
